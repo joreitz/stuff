@@ -69,6 +69,38 @@ def read_cube(content):
 
     return atoms, X.flatten(), Y.flatten(), Z.flatten(), val_array
 
+st.title("☁️ Cloud EHT-Rechner & Viewer")
+
+with st.sidebar:
+    st.header("1. Molekül hochladen")
+    xyz_file = st.file_uploader("Lade eine .xyz Datei hoch", type=["xyz"])
+
+if xyz_file is not None:
+    # 1. Die hochgeladene Datei speichern, damit Rust sie lesen kann
+    with open("struc.xyz", "wb") as f:
+        f.write(xyz_file.getvalue())
+    
+    st.success("Struktur gespeichert! Starte Berechnung...")
+    
+    # 2. Rust-Programm über das Terminal ausführen
+    with st.spinner("Rust rechnet (Diagonalisiere Matrizen)... 🦀"):
+        try:
+            # Das entspricht dem Befehl "cargo run --release" im Terminal
+            subprocess.run(["cargo", "run", "--release"], check=True)
+        except subprocess.CalledProcessError as e:
+            st.error("Fehler bei der Rust-Berechnung!")
+            st.stop()
+            
+    st.success("Berechnung erfolgreich! Lade 3D-Modelle...")
+    
+    # 3. Jetzt, wo Rust fertig ist, existieren die eht_output.txt und die mo_X.cube Dateien
+    # auf der Festplatte des Cloud-Servers. Wir können sie direkt einlesen!
+    
+    with open("eht_output.txt", "r") as f:
+        eht_content = f.read()
+        
+    energies, characters, homo_idx = parse_eht_output(eht_content)
+
 # --- UI Aufbau ---
 st.title("🧪 Extended Hückel MO Viewer")
 
