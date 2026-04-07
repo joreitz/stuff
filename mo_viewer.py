@@ -1,21 +1,13 @@
 import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
-import os
 import re
 
-# --- Seitenkonfiguration ---
 st.set_page_config(page_title="EHT MO Viewer", layout="wide")
 
-# --- Datenlade-Funktionen (mit Cache für maximale Geschwindigkeit) ---
+# --- Angepasste Parser-Funktionen für hochgeladene Dateien (Strings) ---
 @st.cache_data
-def parse_eht_output(filepath="eht_output.txt"):
-    if not os.path.exists(filepath):
-        return {}, {}, 0
-        
-    with open(filepath, "r", encoding="utf-8") as f:
-        content = f.read()
-
+def parse_eht_output(content):
     energies = {}
     if "Orbital Energies (eV):" in content:
         energy_block = content.split("Orbital Energies (eV):")[1].split("===")[0].strip()
@@ -42,9 +34,8 @@ def parse_eht_output(filepath="eht_output.txt"):
     return energies, characters, homo_idx
 
 @st.cache_data
-def read_cube(filename):
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+def read_cube(content):
+    lines = content.splitlines()
 
     parts = lines[2].split()
     natoms = int(parts[0])
@@ -81,56 +72,53 @@ def read_cube(filename):
 # --- UI Aufbau ---
 st.title("🧪 Extended Hückel MO Viewer")
 
-# Daten laden
-energies, characters, homo_idx = parse_eht_output("eht_output.txt")
+# NEU: Datei-Uploader in der Seitenleiste (Sidebar)
+with st.sidebar:
+    st.header("1. Daten hochladen")
+    eht_file = st.file_uploader("Lade eht_output.txt hoch", type=["txt"])
+    cube_files = st.file_uploader("Lade Cube-Dateien hoch (.cube)", type=["cube"], accept_multiple_files=True)
+    
+    st.header("2. Darstellung")
+    isovalue = st.slider("Iso-Wert (Volumen)", min_value=0.005, max_value=0.1, value=0.03, step=0.005)
 
-if not energies:
-    st.error("Konnte eht_output.txt nicht finden oder parsen.")
+# Hauptbereich prüfen, ob die Textdatei da ist
+if eht_file is None:
+    st.info("👈 Bitte lade auf der linken Seite deine 'eht_output.txt' hoch, um zu starten!")
     st.stop()
 
-# Layout in zwei Spalten aufteilen (Links schmaler, rechts breiter)
-col1, col2 = st.columns([1, 2])
+# Textdatei auslesen (dekodieren aus Bytes in String)
+eht_content = eht_file.getvalue().decode("utf-8")
+energies, characters, homo_idx = parse_eht_output(eht_content)
 
-# Sidebar oder Top-Level Steuerung für den Iso-Wert
-isovalue = st.slider("Iso-Wert (Volumen der Orbitalwolke)", min_value=0.005, max_value=0.1, value=0.03, step=0.005)
+# Cube Dateien in ein Dictionary sortieren (Dateiname -> Datei)
+cube_dict = {f.name: f for f in cube_files} if cube_files else {}
+
+col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("MO Energieschema")
-    
-    # MO Auswahl (Dropdown)
     mo_list = sorted(list(energies.keys()))
-    # Standardmäßig das HOMO auswählen
     default_index = homo_idx - 1 if homo_idx > 0 else 0
     selected_mo = st.selectbox("Wähle ein MO zur 3D-Ansicht:", mo_list, index=default_index)
     
-    # 2D Diagramm zeichnen
     fig2d = go.Figure()
-    x_center = 0
-    line_width = 0.4
+    x_center, line_width = 0, 0.4
 
     for mo_id, energy in energies.items():
         is_occupied = mo_id <= homo_idx
-        
-        # Das ausgewählte MO optisch hervorheben (Gold)
         if mo_id == selected_mo:
-            color = "orange"
-            width = 8
+            color, width = "orange", 8
         else:
-            color = "blue" if is_occupied else "red"
-            width = 4
+            color, width = ("blue" if is_occupied else "red"), 4
 
         char = characters.get(mo_id, "Unknown")
         hover_text = f"MO {mo_id}<br>Energie: {energy:.4f} eV<br>Charakter: {char}"
 
         fig2d.add_trace(go.Scatter(
             x=[x_center - line_width/2, x_center + line_width/2],
-            y=[energy, energy],
-            mode="lines",
+            y=[energy, energy], mode="lines",
             line=dict(color=color, width=width),
-            name=f"MO {mo_id}",
-            hoverinfo="text",
-            hovertext=hover_text,
-            showlegend=False
+            name=f"MO {mo_id}", hoverinfo="text", hovertext=hover_text, showlegend=False
         ))
 
         if is_occupied:
@@ -144,51 +132,31 @@ with col1:
         plot_bgcolor="white", height=600, margin=dict(l=0, r=0, t=30, b=0)
     )
     fig2d.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-    
-    st.plotly_chart(fig2d, use_container_width=True)
+    st.plotly_chart(fig2d, width="stretch")
 
 with col2:
     st.subheader(f"3D Ansicht: MO {selected_mo}")
-    cube_file = f"mo_{selected_mo}.cube"
+    expected_filename = f"mo_{selected_mo}.cube"
     
-    if os.path.exists(cube_file):
+    if expected_filename in cube_dict:
         with st.spinner('Lade 3D Gitter...'):
-            atoms, X, Y, Z, values = read_cube(cube_file)
+            cube_content = cube_dict[expected_filename].getvalue().decode("utf-8")
+            atoms, X, Y, Z, values = read_cube(cube_content)
             
             fig3d = go.Figure()
 
-            # Positive Phase
-            fig3d.add_trace(go.Isosurface(
-                x=X, y=Y, z=Z, value=values,
-                isomin=isovalue, isomax=isovalue,
-                surface_fill=0.7, colorscale=[[0, 'blue'], [1, 'blue']],
-                showscale=False, name='Positive Phase'
-            ))
-
-            # Negative Phase
-            fig3d.add_trace(go.Isosurface(
-                x=X, y=Y, z=Z, value=values,
-                isomin=-isovalue, isomax=-isovalue,
-                surface_fill=0.7, colorscale=[[0, 'red'], [1, 'red']],
-                showscale=False, name='Negative Phase'
-            ))
+            # Positive & Negative Phasen
+            fig3d.add_trace(go.Isosurface(x=X, y=Y, z=Z, value=values, isomin=isovalue, isomax=isovalue, surface_fill=0.7, colorscale=[[0, 'blue'], [1, 'blue']], showscale=False))
+            fig3d.add_trace(go.Isosurface(x=X, y=Y, z=Z, value=values, isomin=-isovalue, isomax=-isovalue, surface_fill=0.7, colorscale=[[0, 'red'], [1, 'red']], showscale=False))
 
             # Atome zeichnen
             color_map = {1: 'lightgray', 6: 'black', 7: 'blue', 8: 'red'}
             fig3d.add_trace(go.Scatter3d(
-                x=[a['pos'][0] for a in atoms],
-                y=[a['pos'][1] for a in atoms],
-                z=[a['pos'][2] for a in atoms],
-                mode='markers',
-                marker=dict(size=10, color=[color_map.get(a['z'], 'green') for a in atoms]),
-                name='Atome', hoverinfo="none"
+                x=[a['pos'][0] for a in atoms], y=[a['pos'][1] for a in atoms], z=[a['pos'][2] for a in atoms],
+                mode='markers', marker=dict(size=10, color=[color_map.get(a['z'], 'green') for a in atoms]), hoverinfo="none"
             ))
 
-            fig3d.update_layout(
-                scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z', aspectmode='data'),
-                height=600, margin=dict(l=0, r=0, t=0, b=0)
-            )
-            
-            st.plotly_chart(fig3d, use_container_width=True)
+            fig3d.update_layout(scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z', aspectmode='data'), height=600, margin=dict(l=0, r=0, t=0, b=0))
+            st.plotly_chart(fig3d, width="stretch")
     else:
-        st.warning(f"Datei `{cube_file}` wurde nicht gefunden. Hast du dein Rust-Programm so eingestellt, dass es diese Datei generiert?")
+        st.warning(f"Lade bitte die Datei `{expected_filename}` auf der linken Seite hoch, um das 3D-Modell zu sehen!")
